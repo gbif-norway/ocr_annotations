@@ -1,0 +1,9 @@
+version: '3'
+
+services:
+  add_ocr_annotations:
+    build: .
+    volumes:
+      - ./code:/srv/  
+    env_file:
+      - .env
