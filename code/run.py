@@ -5,6 +5,7 @@ from google.cloud import vision
 import urllib.parse
 import proto
 import json
+from minio import Minio
 
 def gv_ocr(content):
     gvclient = vision.ImageAnnotatorClient()
@@ -28,13 +29,13 @@ def already_annotated_with_ocr(resolvable_object_id):
     if response.status_code != requests.codes.ok:
         raise Exception
     
-    if len(response.json()):
+    if response.json()['count']:
         print(f'Already ocred and annotated: {resolvable_object_id}')
         return True
     else:
         return False
 
-def annotate(resolvable_object_id, ocr, gbif_id):
+def annotate(resolvable_object_id, ocr, gbif_id, notes):
     url = 'https://annotater.svc.gbif.no/'
     headers = { 'Authorization': f'Token {os.environ["ANNOTATER_KEY"]}' }
     data = {
@@ -50,12 +51,21 @@ def annotate(resolvable_object_id, ocr, gbif_id):
         'gbif_id': gbif_id,
         'annotation': ocr['text'],
         'source': 'gcv_ocr_text',
-        'notes': 'automated ocr from batch of images in dataset'
+        'notes': notes
     }
     response = requests.post(url, headers=headers, json=data)
     print(f'Successfully annotated: {response}')
 
-def main():
+def ocr_and_store(id, image_url, gbif_id=None, notes='automated ocr from batch of images in dataset'):
+    if not already_annotated_with_ocr(id):
+        img = requests.get(image_url)
+        if img.status_code == 200:
+            ocr_text = gv_ocr(img.content) 
+            annotate(id, ocr_text, gbif_id, notes)
+        else:
+            print(f"ERROR - File has been removed {image_url}")
+
+def annotate_from_gbif_dataset():
     print(f'Starting... {os.environ["GBIF_IMAGES_DATASETKEY"]}')
     base_url = 'http://api.gbif.org/v1/occurrence/search'
     dataset_key = os.environ['GBIF_IMAGES_DATASETKEY']
@@ -70,16 +80,19 @@ def main():
         print(f'Got {len(results)} from the GBIF API - {query_string}')
         for result in results:
             if 'media' in result:
-                if not already_annotated_with_ocr(result['occurrenceID']):
-
-                    img = requests.get(result['media'][0]['identifier'])
-                    if img.status_code == 200:
-                        ocr_text = gv_ocr(img.content) 
-                        annotate(result['occurrenceID'], ocr_text, result['gbifID'])
-                    else:
-                        print(f"ERROR - File has been removed {result['media'][0]['identifier']}")
+                ocr_and_store(result['occurrenceID'], result['media'][0]['identifier'], result['gbifID'])
     else:
         logging.error(f'Bad response {response.status_code} from the GBIF API')
+
+def annotate_from_bucket():
+    client = Minio(os.getenv('MINIO_URI'), access_key=os.getenv('MINIO_ACCESS_KEY'), secret_key=os.getenv('MINIO_SECRET_KEY'))
+    images = client.list_objects(os.getenv('MINIO_BUCKET'), prefix=os.getenv('MINIO_PREFIX'))
+    for image in images:
+        image_url = f"https://{os.getenv('MINIO_URI')}/{os.getenv('MINIO_BUCKET')}/{image.object_name}"
+        ocr_and_store(image_url, image_url, notes="ITALY:Test OCR for Padua")
+
+def main():
+    annotate_from_bucket()
 
 if __name__ == '__main__':
     main()
